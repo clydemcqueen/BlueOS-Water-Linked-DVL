@@ -52,7 +52,8 @@ class DvlDriver(threading.Thread):
     orientation = DVL_DOWN
     enabled = True
     rangefinder = True
-    hostname = HOSTNAME
+    beam_distances_enabled = True  # New setting for individual beam distances
+    hostname = os.environ.get("DVL_HOSTNAME", HOSTNAME)
     timeout = 3  # tcp timeout in seconds
     origin = [0, 0]
     saved_settings = [
@@ -62,6 +63,7 @@ class DvlDriver(threading.Thread):
         "origin",
         "rangefinder",
         "should_send",
+        "beam_distances_enabled",
     ]
     settings_path = os.path.join(os.path.expanduser("~"), ".config", "dvl", "settings.json")
 
@@ -71,6 +73,10 @@ class DvlDriver(threading.Thread):
     last_temperature_check_time = 0
     temperature_check_interval_s = 30
     temperature_too_hot = 45
+    
+    # Status tracking for individual beam distances
+    last_beam_distances = [0, 0, 0, 0]
+    last_beam_valid = [False, False, False, False]
 
     def __init__(self, orientation=DVL_DOWN) -> None:
         threading.Thread.__init__(self)
@@ -122,13 +128,16 @@ class DvlDriver(threading.Thread):
         ensure_dir(self.settings_path)
         with open(self.settings_path, "w") as settings:
             settings.write(json.dumps(self.current_settings))
-
     def get_status(self) -> dict:
         """
         Returns a dict with the current status
         """
-        return {"status": self.status, **self.current_settings}
-
+        return {
+            "status": self.status,
+            **self.current_settings,
+            "beam_distances": self.last_beam_distances,
+            "beam_valid": self.last_beam_valid,
+        }
     @property
     def host(self) -> str:
         """Make sure there is no port in the hostname allows local testing by where http can be running on other ports than 80"""
@@ -145,6 +154,12 @@ class DvlDriver(threading.Thread):
         self.wait_for_cable_guy()
         ip = self.hostname
         self.report_status(f"Trying to talk to dvl at http://{ip}/api/v1/about")
+        
+        # In test mode, skip the DVL discovery and try to connect directly
+        if os.environ.get("DVL_TEST_MODE", "false").lower() == "true":
+            logger.info(f"Test mode: Attempting direct connection to {ip}")
+            return
+
         while "DVL not found":
             if request(f"http://{ip}/api/v1/about"):
                 self.report_status(f"DVL found at {ip}, using it.")
@@ -162,6 +177,10 @@ class DvlDriver(threading.Thread):
             time.sleep(1)
 
     def wait_for_cable_guy(self):
+        # Skip cable-guy check if running in test mode
+        if os.environ.get("DVL_TEST_MODE", "false").lower() == "true":
+            logger.info("Running in test mode, skipping cable-guy check")
+            return
         while not request("http://host.docker.internal/cable-guy/v1.0/ethernet"):
             self.report_status("waiting for cable-guy to come online...")
             time.sleep(1)
@@ -170,6 +189,10 @@ class DvlDriver(threading.Thread):
         """
         Waits for a valid heartbeat to Mavlink2Rest
         """
+        # Skip vehicle check if running in test mode
+        if os.environ.get("DVL_TEST_MODE", "false").lower() == "true":
+            logger.info("Running in test mode, skipping vehicle heartbeat check")
+            return
         self.report_status("Waiting for vehicle...")
         while not self.mav.get("/HEARTBEAT"):
             time.sleep(1)
@@ -280,6 +303,14 @@ class DvlDriver(threading.Thread):
             self.mav.set_param("RNGFND1_TYPE", "MAV_PARAM_TYPE_UINT8", 10)  # MAVLINK
         return True
 
+    def set_beam_distances_enabled(self, enable: bool) -> bool:
+        """
+        Enables/disables individual beam DISTANCE_SENSOR messages
+        """
+        self.beam_distances_enabled = enable
+        self.save_settings()
+        return True
+
     def load_params(self, selector: str) -> bool:
         """
         Load EK3_SRC1 parameters to match the use case:
@@ -378,8 +409,25 @@ class DvlDriver(threading.Thread):
             logger.info("Invalid  dvl reading, ignoring it.")
             return
 
+        # Send main rangefinder message (average altitude)
         if self.rangefinder and alt > 0.05:
             self.mav.send_rangefinder(alt)
+
+        # Process individual beam distances if available and enabled
+        if self.beam_distances_enabled and "transducers" in data:
+            beam_distances = []
+            beam_valid = []
+            
+            for transducer in data["transducers"]:
+                beam_distances.append(transducer["distance"])
+                beam_valid.append(transducer["beam_valid"])
+            
+            # Update status tracking
+            self.last_beam_distances = beam_distances
+            self.last_beam_valid = beam_valid
+            
+            # Send individual beam distance messages
+            self.mav.send_beam_distances(beam_distances, beam_valid)
 
         position_delta = [0, 0, 0]
         attitude_delta = [0, 0, 0]
