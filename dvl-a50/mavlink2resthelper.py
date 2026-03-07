@@ -357,9 +357,7 @@ class Mavlink2RestHelper:
         if distance == -1:
             return
         data = self.rangefinder_template.format(
-            distance=int(distance * 100), 
-            sensor_id=sensor_id, 
-            orientation=orientation
+            distance=int(distance * 100), sensor_id=sensor_id, orientation=orientation
         )
         post(MAVLINK2REST_URL + "/mavlink", data=data)
 
@@ -373,14 +371,14 @@ class Mavlink2RestHelper:
         beam_orientations = [
             "MAV_SENSOR_ROTATION_YAW_135",  # rear-right
             "MAV_SENSOR_ROTATION_YAW_225",  # rear-left
-            "MAV_SENSOR_ROTATION_YAW_315",  # front-left 
-            "MAV_SENSOR_ROTATION_YAW_45"    # front-right
+            "MAV_SENSOR_ROTATION_YAW_315",  # front-left
+            "MAV_SENSOR_ROTATION_YAW_45",  # front-right
         ]
-        
+
         for i, (distance, valid) in enumerate(zip(beam_distances, beam_valid)):
             if valid and distance > 0.05:  # Only send valid readings above 5cm
                 # Use sensor_id 1-4 for individual beams (0 is reserved for average)
-                self.send_rangefinder(distance, sensor_id=i+1, orientation=beam_orientations[i])
+                self.send_rangefinder(distance, sensor_id=i + 1, orientation=beam_orientations[i])
 
     def set_gps_origin(self, lat, lon):
         data = self.gps_origin_template.format(lat=int(float(lat) * 1e7), lon=int(float(lon) * 1e7))

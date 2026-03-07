@@ -73,7 +73,7 @@ class DvlDriver(threading.Thread):
     last_temperature_check_time = 0
     temperature_check_interval_s = 30
     temperature_too_hot = 45
-    
+
     # Status tracking for individual beam distances
     last_beam_distances = [0, 0, 0, 0]
     last_beam_valid = [False, False, False, False]
@@ -128,6 +128,7 @@ class DvlDriver(threading.Thread):
         ensure_dir(self.settings_path)
         with open(self.settings_path, "w") as settings:
             settings.write(json.dumps(self.current_settings))
+
     def get_status(self) -> dict:
         """
         Returns a dict with the current status
@@ -138,6 +139,7 @@ class DvlDriver(threading.Thread):
             "beam_distances": self.last_beam_distances,
             "beam_valid": self.last_beam_valid,
         }
+
     @property
     def host(self) -> str:
         """Make sure there is no port in the hostname allows local testing by where http can be running on other ports than 80"""
@@ -154,7 +156,7 @@ class DvlDriver(threading.Thread):
         self.wait_for_cable_guy()
         ip = self.hostname
         self.report_status(f"Trying to talk to dvl at http://{ip}/api/v1/about")
-        
+
         # In test mode, skip the DVL discovery and try to connect directly
         if os.environ.get("DVL_TEST_MODE", "false").lower() == "true":
             logger.info(f"Test mode: Attempting direct connection to {ip}")
@@ -417,15 +419,15 @@ class DvlDriver(threading.Thread):
         if self.beam_distances_enabled and "transducers" in data:
             beam_distances = []
             beam_valid = []
-            
+
             for transducer in data["transducers"]:
                 beam_distances.append(transducer["distance"])
                 beam_valid.append(transducer["beam_valid"])
-            
+
             # Update status tracking
             self.last_beam_distances = beam_distances
             self.last_beam_valid = beam_valid
-            
+
             # Send individual beam distance messages
             self.mav.send_beam_distances(beam_distances, beam_valid)
 
