@@ -8,10 +8,12 @@ import json
 from flask import Flask
 
 from dvl import DvlDriver
+from terrain_ekf import EKFParams
 
 # set the project root directory as the static folder, you can set others.
 app = Flask(__name__, static_url_path="/static", static_folder="static")
 thread = None
+sim = None
 
 
 class API:
@@ -63,13 +65,19 @@ class API:
             return self.dvl.set_use_as_rangefinder(enabled == "true")
         return False
 
-    def set_beam_distances_enabled(self, enabled: str) -> bool:
+    def set_ekf_enabled(self, enabled: str) -> bool:
         """
-        Enables/disables individual beam distance sensors
+        Enables/disables the EKF
         """
         if enabled in ["true", "false"]:
-            return self.dvl.set_beam_distances_enabled(enabled == "true")
+            return self.dvl.set_ekf_enabled(enabled == "true")
         return False
+
+    def set_ekf_params(self, params: EKFParams) -> bool:
+        """
+        Sets the parameters for TerrainEKF
+        """
+        return self.dvl.set_ekf_params(params)
 
     def load_params(self, selector: str) -> bool:
         """
@@ -84,7 +92,33 @@ class API:
 
 
 if __name__ == "__main__":
-    driver = DvlDriver()
+    import os
+
+    is_sim_mode = os.environ.get("DVL_SIM_MODE", "false").lower() == "true"
+    if is_sim_mode:
+        os.environ["DVL_TEST_MODE"] = "true"  # Ensure discovery & cable guy are bypassed
+        from simulator import DvlSimulator
+
+        sim = DvlSimulator(port=16171)
+        sim.start()
+
+        driver = DvlDriver()
+        driver.mav = sim.mav_helper
+        driver.hostname = "127.0.0.1"
+        driver.port = 16171
+
+        # Patch load_settings to not overwrite simulator connection
+        original_load_settings = driver.load_settings
+
+        def sim_load_settings():
+            original_load_settings()
+            driver.hostname = "127.0.0.1"
+            driver.port = 16171
+
+        driver.load_settings = sim_load_settings
+    else:
+        driver = DvlDriver()
+
     api = API(driver)
 
     @app.route("/get_status")
@@ -99,9 +133,22 @@ if __name__ == "__main__":
     def set_use_rangefinder(enable: str):
         return str(api.set_use_as_rangefinder(enable))
 
-    @app.route("/beam_distances/<enable>")
-    def set_beam_distances(enable: str):
-        return str(api.set_beam_distances_enabled(enable))
+    @app.route("/set_ekf_enabled/<enable>")
+    def set_ekf_enabled_route(enable: str):
+        return str(api.set_ekf_enabled(enable))
+
+    # pylint: disable=too-many-arguments,too-many-positional-arguments
+    @app.route("/set_ekf_params/<delay>/<t_var>/<s_var>/<t_noise>/<s_noise>/<gate>")
+    def set_ekf_params_route(delay: str, t_var: str, s_var: str, t_noise: str, s_noise: str, gate: str):
+        params = EKFParams(
+            delay=float(delay),
+            t_var=float(t_var),
+            s_var=float(s_var),
+            t_noise=float(t_noise),
+            s_noise=float(s_noise),
+            gate=float(gate),
+        )
+        return str(api.set_ekf_params(params))
 
     @app.route("/load_params/<selector>")
     def load_params(selector: str):
@@ -128,4 +175,6 @@ if __name__ == "__main__":
         return app.send_static_file("index.html")
 
     driver.start()
-    app.run(host="0.0.0.0", port=9001)
+    # Use a specific port number if requested
+    port = os.environ.get("GUI_PORT", "9001")
+    app.run(host="0.0.0.0", port=port)

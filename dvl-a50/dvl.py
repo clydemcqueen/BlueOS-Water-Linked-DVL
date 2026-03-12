@@ -2,6 +2,7 @@
 Code for integration of Water Linked DVL A50/A125 with BlueOS and ArduSub
 """
 
+import csv
 import json
 import math
 import os
@@ -12,16 +13,33 @@ from enum import Enum
 from select import select
 from typing import Any, Dict, List
 
+import numpy as np
 from loguru import logger
 
 from blueoshelper import request
 from dvlfinder import find_the_dvl
 from mavlink2resthelper import GPS_GLOBAL_ORIGIN_ID, Mavlink2RestHelper
+from terrain_ekf import EKFParams, TerrainEKF
 
 HOSTNAME = "waterlinked-dvl.local"
 DVL_DOWN = 1
 DVL_FORWARD = 2
 LATLON_TO_CM = 1.1131884502145034e5
+
+
+class DVLModelA50:
+    def get_beam_vectors_body(self):
+        pitch_rad = math.radians(22.5)
+        # 0: rear-right (135), 1: rear-left (225), 2: front-left (315), 3: front-right (45)
+        yaws = [135, 225, 315, 45]
+        vectors = []
+        for yaw in yaws:
+            yaw_rad = math.radians(yaw)
+            vx = math.sin(pitch_rad) * math.cos(yaw_rad)
+            vy = math.sin(pitch_rad) * math.sin(yaw_rad)
+            vz = math.cos(pitch_rad)
+            vectors.append(np.array([vx, vy, vz]))
+        return vectors
 
 
 class MessageType(str, Enum):
@@ -52,7 +70,6 @@ class DvlDriver(threading.Thread):
     orientation = DVL_DOWN
     enabled = True
     rangefinder = True
-    beam_distances_enabled = True  # New setting for individual beam distances
     hostname = os.environ.get("DVL_HOSTNAME", HOSTNAME)
     timeout = 3  # tcp timeout in seconds
     origin = [0, 0]
@@ -63,8 +80,35 @@ class DvlDriver(threading.Thread):
         "origin",
         "rangefinder",
         "should_send",
-        "beam_distances_enabled",
+        "send_ekf_output",
+        "ekf_sensor_delay",
+        "ekf_terrain_variance",
+        "ekf_slope_variance",
+        "ekf_terrain_process_noise",
+        "ekf_slope_process_noise",
+        "ekf_gate_threshold",
     ]
+
+    send_ekf_output = False
+    ekf_enabled = True
+    ekf_sensor_delay = 0.2
+    ekf_terrain_variance = 100.0
+    ekf_slope_variance = 1.0
+    ekf_terrain_process_noise = 0.01
+    ekf_slope_process_noise = 0.1
+    ekf_gate_threshold = 9.0
+
+    ekf = None
+    ekf_log_file = None
+    ekf_csv_writer = None
+
+    ekf_state_terrain_z = 0.0
+    ekf_state_slope_n = 0.0
+    ekf_state_slope_e = 0.0
+    ekf_projected_terrain_z = 0.0
+    ekf_projected_alt = 0.0
+    ekf_projected_rangefinder = 0.0
+
     settings_path = os.path.join(os.path.expanduser("~"), ".config", "dvl", "settings.json")
 
     should_send = MessageType.POSITION_DELTA
@@ -80,6 +124,7 @@ class DvlDriver(threading.Thread):
 
     def __init__(self, orientation=DVL_DOWN) -> None:
         threading.Thread.__init__(self)
+        self.daemon = True
         self.orientation = orientation
         # used for calculating attitude delta
         self.last_attitude = (0, 0, 0)
@@ -88,6 +133,47 @@ class DvlDriver(threading.Thread):
     def report_status(self, msg: str) -> None:
         self.status = msg
         logger.debug(msg)
+
+    def reset_ekf(self):
+        if not self.ekf_enabled:
+            return
+
+        logger.info("Resetting TerrainEKF...")
+
+        self.ekf = None
+
+        try:
+            log_path = os.path.join(os.path.expanduser("~"), ".config", "dvl", "ekf_log.csv")
+            if self.ekf_log_file:
+                self.ekf_log_file.close()
+
+            file_exists = os.path.isfile(log_path)
+            # pylint: disable=consider-using-with
+            self.ekf_log_file = open(log_path, mode="a", newline="")
+            self.ekf_csv_writer = csv.writer(self.ekf_log_file)
+
+            if not file_exists:
+                self.ekf_csv_writer.writerow(
+                    [
+                        "timestamp",
+                        "vn",
+                        "ve",
+                        "vd",
+                        "rov_depth",
+                        "roll",
+                        "pitch",
+                        "yaw",
+                        "beam_distances",
+                        "ekf_terrain_z",
+                        "ekf_slope_n",
+                        "ekf_slope_e",
+                        "projected_terrain_z",
+                        "projected_alt",
+                        "projected_rangefinder",
+                    ]
+                )
+        except Exception as e:
+            logger.warning(f"Could not open EKF log file: {e}")
 
     def load_settings(self) -> None:
         """
@@ -107,6 +193,12 @@ class DvlDriver(threading.Thread):
             logger.warning("Settings file not found, using default.")
         except ValueError:
             logger.warning("File corrupted, using default settings.")
+
+        env_hostname = os.environ.get("DVL_HOSTNAME")
+        if env_hostname:
+            self.hostname = env_hostname
+        self.ekf_enabled = True
+        self.reset_ekf()
 
     @property
     def current_settings(self):
@@ -136,8 +228,15 @@ class DvlDriver(threading.Thread):
         return {
             "status": self.status,
             **self.current_settings,
+            "ekf_enabled": self.send_ekf_output,
             "beam_distances": self.last_beam_distances,
             "beam_valid": self.last_beam_valid,
+            "ekf_state_terrain_z": self.ekf_state_terrain_z,
+            "ekf_projected_terrain_z": self.ekf_projected_terrain_z,
+            "ekf_state_slope_n": self.ekf_state_slope_n,
+            "ekf_state_slope_e": self.ekf_state_slope_e,
+            "ekf_projected_alt": self.ekf_projected_alt,
+            "ekf_projected_rangefinder": self.ekf_projected_rangefinder,
         }
 
     @property
@@ -305,12 +404,20 @@ class DvlDriver(threading.Thread):
             self.mav.set_param("RNGFND1_TYPE", "MAV_PARAM_TYPE_UINT8", 10)  # MAVLINK
         return True
 
-    def set_beam_distances_enabled(self, enable: bool) -> bool:
-        """
-        Enables/disables individual beam DISTANCE_SENSOR messages
-        """
-        self.beam_distances_enabled = enable
+    def set_ekf_enabled(self, enable: bool) -> bool:
+        self.send_ekf_output = enable
         self.save_settings()
+        return True
+
+    def set_ekf_params(self, params: EKFParams) -> bool:
+        self.ekf_sensor_delay = params.delay
+        self.ekf_terrain_variance = params.t_var
+        self.ekf_slope_variance = params.s_var
+        self.ekf_terrain_process_noise = params.t_noise
+        self.ekf_slope_process_noise = params.s_noise
+        self.ekf_gate_threshold = params.gate
+        self.save_settings()
+        self.reset_ekf()
         return True
 
     def load_params(self, selector: str) -> bool:
@@ -386,6 +493,23 @@ class DvlDriver(threading.Thread):
 
         return False
 
+    def _get_r_body_to_earth(self, roll, pitch, yaw):
+        cr = math.cos(roll)
+        sr = math.sin(roll)
+        cp = math.cos(pitch)
+        sp = math.sin(pitch)
+        cy = math.cos(yaw)
+        sy = math.sin(yaw)
+
+        R = np.array(
+            [
+                [cp * cy, sr * sp * cy - cr * sy, cr * sp * cy + sr * sy],
+                [cp * sy, sr * sp * sy + cr * cy, cr * sp * sy - sr * cy],
+                [-sp, sr * cp, cr * cp],
+            ]
+        )
+        return R
+
     def handle_velocity(self, data: Dict[str, Any]) -> None:
         # extract velocity data from the DVL JSON
         vx, vy, vz, alt, valid, fom = (
@@ -411,25 +535,134 @@ class DvlDriver(threading.Thread):
             logger.info("Invalid  dvl reading, ignoring it.")
             return
 
-        # Send main rangefinder message (average altitude)
-        if self.rangefinder and alt > 0.05:
-            self.mav.send_rangefinder(alt)
-
-        # Process individual beam distances if available and enabled
-        if self.beam_distances_enabled and "transducers" in data:
-            beam_distances = []
-            beam_valid = []
-
+        # Process individual beam distances
+        beam_distances = []
+        beam_valid = []
+        if "transducers" in data:
             for transducer in data["transducers"]:
                 beam_distances.append(transducer["distance"])
                 beam_valid.append(transducer["beam_valid"])
 
-            # Update status tracking
+        is_test_mode = os.environ.get("DVL_TEST_MODE", "false").lower() == "true"
+
+        if "transducers" in data or is_test_mode:
             self.last_beam_distances = beam_distances
             self.last_beam_valid = beam_valid
 
-            # Send individual beam distance messages
-            self.mav.send_beam_distances(beam_distances, beam_valid)
+        # We explicitly mock MAVLink messages (depth and attitude) in DVL_TEST_MODE
+        # since the test environment might not emit them.
+        is_test_mode = os.environ.get("DVL_TEST_MODE", "false").lower() == "true"
+
+        rov_depth = 0.0
+        r_roll, r_pitch, r_yaw = 0.0, 0.0, 0.0
+
+        try:
+            if is_test_mode:
+                vfr_hud = self.mav.get("/VFR_HUD/message")
+                if vfr_hud:
+                    rov_depth = -float(json.loads(vfr_hud)["alt"])
+                else:
+                    rov_depth = 1.0  # 1m depth assumption for test mode
+
+                attitude = self.mav.get("/ATTITUDE/message")
+                if attitude:
+                    attitude_data = json.loads(attitude)
+                    r_roll, r_pitch, r_yaw = attitude_data["roll"], attitude_data["pitch"], attitude_data["yaw"]
+            else:
+                rov_depth = -float(self.mav.get("/VFR_HUD/message/alt"))
+                attitude_data = json.loads(self.mav.get("/ATTITUDE/message"))
+                r_roll, r_pitch, r_yaw = attitude_data["roll"], attitude_data["pitch"], attitude_data["yaw"]
+        except Exception:
+            pass  # Accept 0s if we fail to fetch MAVLink on this cycle
+
+        if self.ekf_enabled and self.ekf is None and alt > 0:
+            logger.info(f"Initializing TerrainEKF with alt={alt}, rov_depth={rov_depth}")
+            self.ekf = TerrainEKF(
+                dvl_model=DVLModelA50(),
+                initial_terrain_z=alt + rov_depth,
+                params=EKFParams(
+                    delay=self.ekf_sensor_delay,
+                    t_var=self.ekf_terrain_variance,
+                    s_var=self.ekf_slope_variance,
+                    t_noise=self.ekf_terrain_process_noise,
+                    s_noise=self.ekf_slope_process_noise,
+                    gate=self.ekf_gate_threshold,
+                ),
+            )
+
+        if self.ekf_enabled and self.ekf is not None:
+            # We want vn, ve in earth frame for predict step
+            R_body_to_earth = self._get_r_body_to_earth(r_roll, r_pitch, r_yaw)
+            v_body = np.array([vx, vy, vz])
+            v_earth = R_body_to_earth @ v_body
+            vn, ve, vd = v_earth[0], v_earth[1], v_earth[2]
+
+            # Predict
+            self.ekf.predict(vn, ve, dt)
+
+            # Update if we have valid beams
+            if len(beam_distances) == 4:
+                # Replace invalid beams with 0 for EKF (TerrainEKF handles 0 as reject)
+                ekf_beams = [d if v else 0.0 for d, v in zip(beam_distances, beam_valid)]
+                # Convert list to array or pass directly depending on if TerrainEKF expects array.
+                self.ekf.update(ekf_beams, rov_depth, R_body_to_earth, beam_variance=0.01)
+
+            # Project forward from t_capture to t_now
+            state_proj, _ = self.ekf.project((vn, ve), self.ekf_sensor_delay)
+            self.ekf_state_terrain_z = self.ekf.x[0, 0]
+            self.ekf_state_slope_n = self.ekf.x[1, 0]
+            self.ekf_state_slope_e = self.ekf.x[2, 0]
+
+            # Altitude of terrain at t_now (positive down)
+            projected_terrain_z = state_proj[0]
+            self.ekf_projected_terrain_z = projected_terrain_z
+
+            # Vertical range from ROV to terrain
+            self.ekf_projected_alt = projected_terrain_z - rov_depth
+
+            # Calculate the rangefinder distance along the downward body Z axis
+            v_earth_z = R_body_to_earth @ np.array([0, 0, 1])
+            n_earth = np.array([self.ekf_state_slope_n, self.ekf_state_slope_e, 1.0])
+            dot_prod = np.dot(v_earth_z, n_earth)
+            if dot_prod > 0.01:
+                self.ekf_projected_rangefinder = self.ekf_projected_alt / dot_prod
+            else:
+                self.ekf_projected_rangefinder = 0.0
+
+            # Log Data
+            if self.ekf_csv_writer and self.ekf_log_file:
+                self.ekf_csv_writer.writerow(
+                    [
+                        time.time(),
+                        vn,
+                        ve,
+                        vd,
+                        rov_depth,
+                        r_roll,
+                        r_pitch,
+                        r_yaw,
+                        str(beam_distances),
+                        self.ekf_state_terrain_z,
+                        self.ekf_state_slope_n,
+                        self.ekf_state_slope_e,
+                        self.ekf_projected_terrain_z,
+                        self.ekf_projected_alt,
+                        self.ekf_projected_rangefinder,
+                    ]
+                )
+                self.ekf_log_file.flush()
+
+            # Send main rangefinder message
+            if self.rangefinder:
+                if self.send_ekf_output:
+                    if self.ekf_projected_rangefinder > 0.05:
+                        self.mav.send_rangefinder(self.ekf_projected_rangefinder)
+                elif alt > 0.05:
+                    self.mav.send_rangefinder(alt)
+        else:
+            # Send main rangefinder message
+            if self.rangefinder and alt > 0.05:
+                self.mav.send_rangefinder(alt)
 
         position_delta = [0, 0, 0]
         attitude_delta = [0, 0, 0]
@@ -466,7 +699,11 @@ class DvlDriver(threading.Thread):
             return
         self.last_temperature_check_time = now
         try:
-            status = json.loads(request(f"http://{self.hostname}/api/v1/about/status"))
+            response_text = request(f"http://{self.hostname}/api/v1/about/status")
+            if not response_text:
+                return
+
+            status = json.loads(response_text)
 
             temp = float(status["temperature"])
             if temp > self.temperature_too_hot:

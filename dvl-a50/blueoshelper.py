@@ -1,3 +1,4 @@
+import os
 import urllib
 
 from loguru import logger
@@ -10,7 +11,8 @@ def request(url):
     try:
         return urllib.request.urlopen(url, timeout=1).read().decode()
     except Exception as error:
-        logger.warning(f"Error in request: {url}: {error}")
+        if os.environ.get("DVL_TEST_MODE", "false").lower() != "true":
+            logger.warning(f"Error in request: {url}: {error}")
         return None
 
 
@@ -29,6 +31,7 @@ def post(url, data):
             return response.read()
 
     except Exception as error:
-        logger.warning(f"Error in request: {url}: {error}")
-        logger.warning(data)
+        if os.environ.get("DVL_TEST_MODE", "false").lower() != "true":
+            logger.warning(f"Error in request: {url}: {error}")
+            logger.warning(data)
         return None

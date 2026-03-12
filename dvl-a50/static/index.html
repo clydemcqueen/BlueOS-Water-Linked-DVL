@@ -4,7 +4,7 @@
 	<title>Water Linked DVL</title>
 
 	<!-- Leaflet will only work with internet, and that is fine. -->
-	<link rel="stylesheet" href="/static/css/leaflet.css"/>
+	<link rel="stylesheet" href="/static/css/leaflet.css" />
 	<!-- Make sure you put this AFTER Leaflet's CSS -->
 	<script src="/static/js/leaflet.js"></script>
 	<script src="/static/js/rotatedmarker.js"></script>
@@ -20,11 +20,13 @@
 	.v-card {
 		padding: 20px;
 	}
+
 	.leaflet-grab {
-   		cursor: crosshair !important;
+		cursor: crosshair !important;
 	}
+
 	.leaflet-dragging .leaflet-grab {
-   		cursor: grab !important;
+		cursor: grab !important;
 	}
 </style>
 
@@ -35,76 +37,137 @@
 				<img src="/static/waterlinked_logo.png" class="logo" />
 				<h1>DVL Configuration</h1>
 				<p>BlueOS Extension connecting to <a :href="'http://'+hostname">{{ hostname }}</a></p>
-					<br />
+				<br />
 				<v-row>
 					<v-col>
-						<v-card height="650">
+						<v-card height="850" style="overflow-y: auto;">
 							<h2>Settings</h2>
-							<v-switch v-model="this.enabled" inset :label="`Enable DVL driver`" @change="setDvlEnabled($event)"></v-switch>
-							<v-switch v-model="this.rangefinder" inset :label="`Send range data through MAVLink`" @change="setDvlAsRangefinder($event)"></v-switch>
-							<v-switch v-model="this.beamDistancesEnabled" inset :label="`Send individual beam distances`" @change="setBeamDistancesEnabled($event)"></v-switch>
-							<v-btn id="btn-load-dvl" type="button" class="btn btn-primary" @click="loadParams('dvl');">Load parameters for DVL</v-btn>
-							<v-btn id="btn-load-dvl-gps" type="button" class="btn btn-primary" @click="loadParams('dvl_gps');">Load parameters for DVL+GPS</v-btn>
-							<h2>Status</h2>
-							<div>
-								<textarea readonly style="width:100%;"
-									id="dvl-status"> {{status}} </textarea>
+							<v-switch v-model="this.enabled" inset :label="`Enable DVL driver`"
+								@change="setDvlEnabled($event)"></v-switch>
+							<v-switch v-model="this.rangefinder" inset :label="`Send range data through MAVLink`"
+								@change="setDvlAsRangefinder($event)"></v-switch>
+							<v-switch v-model="this.ekfEnabled" inset :label="`Send EKF output`"
+								@change="setEKFEnabled($event)"></v-switch>
+							<v-btn id="btn-load-dvl" type="button" class="btn btn-primary"
+								@click="loadParams('dvl');">Load parameters for DVL</v-btn>
+							<v-btn id="btn-load-dvl-gps" type="button" class="btn btn-primary"
+								@click="loadParams('dvl_gps');" style="margin-top: 10px;">Load parameters for DVL+GPS</v-btn>
+							<div style="margin-top: 20px;">
+								<h3>Terrain EKF Parameters</h3>
+								<v-text-field label="Sensor Delay (s)" type="number" step="0.01"
+									v-model.number="ekfParams.delay"></v-text-field>
+								<v-text-field label="Terrain Variance" type="number" step="0.1"
+									v-model.number="ekfParams.t_var"></v-text-field>
+								<v-text-field label="Slope Variance" type="number" step="0.1"
+									v-model.number="ekfParams.s_var"></v-text-field>
+								<v-text-field label="Terrain Process Noise" type="number" step="0.01"
+									v-model.number="ekfParams.t_noise"></v-text-field>
+								<v-text-field label="Slope Process Noise" type="number" step="0.01"
+									v-model.number="ekfParams.s_noise"></v-text-field>
+								<v-text-field label="Gate Threshold" type="number" step="0.1"
+									v-model.number="ekfParams.gate"></v-text-field>
 							</div>
+							<v-btn id="btn-update-ekf" type="button" class="btn btn-primary"
+								@click="updateEKFParams">Update Params & Reset EKF</v-btn>
 						</v-card>
 					</v-col>
 					<v-col>
-						<v-card height="650">
-							<h2>Distance Sensors</h2>
+						<v-card height="850" style="overflow-y: auto;">
+							<h2>Sensors</h2>
 							<div style="padding: 20px;">
-								<h3>Average Altitude</h3>
-								<div style="font-size: 24px; color: #1976d2; margin-bottom: 20px;">
-									{{ rangefinder ? 'Enabled' : 'Disabled' }}
-								</div>
-								
 								<h3>Individual Beam Distances</h3>
-								<div style="margin-bottom: 10px;">
-									Status: {{ beamDistancesEnabled ? 'Enabled' : 'Disabled' }}
-								</div>
-								
-								<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 15px;">
+								<div
+									style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 15px;">
 									<div style="border: 1px solid #ccc; padding: 10px; text-align: center;">
 										<div style="font-weight: bold;">Beam 3 (Front-Left)</div>
-										<div style="font-size: 18px;" :style="{ color: beamValid[0] ? '#4caf50' : '#f44336' }">
+										<div style="font-size: 18px;"
+											:style="{ color: beamValid[2] ? '#4caf50' : '#f44336' }">
 											{{ beamValid[2] ? (beamDistances[2]).toFixed(2) + ' m' : 'Invalid' }}
 										</div>
 									</div>
 									<div style="border: 1px solid #ccc; padding: 10px; text-align: center;">
 										<div style="font-weight: bold;">Beam 4 (Front-Right)</div>
-										<div style="font-size: 18px;" :style="{ color: beamValid[1] ? '#4caf50' : '#f44336' }">
+										<div style="font-size: 18px;"
+											:style="{ color: beamValid[3] ? '#4caf50' : '#f44336' }">
 											{{ beamValid[3] ? (beamDistances[3]).toFixed(2) + ' m' : 'Invalid' }}
 										</div>
 									</div>
 									<div style="border: 1px solid #ccc; padding: 10px; text-align: center;">
 										<div style="font-weight: bold;">Beam 1 (Back-Right)</div>
-										<div style="font-size: 18px;" :style="{ color: beamValid[2] ? '#4caf50' : '#f44336' }">
+										<div style="font-size: 18px;"
+											:style="{ color: beamValid[0] ? '#4caf50' : '#f44336' }">
 											{{ beamValid[0] ? (beamDistances[0]).toFixed(2) + ' m' : 'Invalid' }}
 										</div>
 									</div>
 									<div style="border: 1px solid #ccc; padding: 10px; text-align: center;">
 										<div style="font-weight: bold;">Beam 2 (Back-Left)</div>
-										<div style="font-size: 18px;" :style="{ color: beamValid[3] ? '#4caf50' : '#f44336' }">
+										<div style="font-size: 18px;"
+											:style="{ color: beamValid[1] ? '#4caf50' : '#f44336' }">
 											{{ beamValid[1] ? (beamDistances[1]).toFixed(2) + ' m' : 'Invalid' }}
 										</div>
 									</div>
 								</div>
-								
+
+								<div style="margin-top: 20px;">
+									<h3>Terrain EKF Values</h3>
+									<div
+										style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 15px; margin-bottom: 20px;">
+										<div style="border: 1px solid #ccc; padding: 10px; text-align: center;">
+											<div style="font-weight: bold;">Terrain Z (t_capture)</div>
+											<div style="font-size: 18px; color: #1976d2;">
+												{{ ekfState.terrain_z.toFixed(3) }} m
+											</div>
+										</div>
+										<div style="border: 1px solid #ccc; padding: 10px; text-align: center;">
+											<div style="font-weight: bold;">Terrain Z (t_now)</div>
+											<div style="font-size: 18px; color: #1976d2;">
+												{{ ekfState.projected_terrain_z.toFixed(3) }} m
+											</div>
+										</div>
+										<div style="border: 1px solid #ccc; padding: 10px; text-align: center;">
+											<div style="font-weight: bold;">Projected Rangefinder (DISTANCE_SENSOR)</div>
+											<div style="font-size: 18px; color: #1976d2;">
+												{{ ekfState.projected_rangefinder.toFixed(3) }} m
+											</div>
+										</div>
+										<div style="border: 1px solid #ccc; padding: 10px; text-align: center;">
+											<div style="font-weight: bold;">Projected Alt (Vertical)</div>
+											<div style="font-size: 18px; color: #1976d2;">
+												{{ ekfState.projected_alt.toFixed(3) }} m
+											</div>
+										</div>
+										<div style="border: 1px solid #ccc; padding: 10px; text-align: center;">
+											<div style="font-weight: bold;">Slope North</div>
+											<div style="font-size: 18px; color: #1976d2;">
+												{{ ekfState.slope_n.toFixed(3) }}
+											</div>
+										</div>
+										<div style="border: 1px solid #ccc; padding: 10px; text-align: center;">
+											<div style="font-weight: bold;">Slope East</div>
+											<div style="font-size: 18px; color: #1976d2;">
+												{{ ekfState.slope_e.toFixed(3) }}
+											</div>
+										</div>
+									</div>
+								</div>
+
 								<div style="margin-top: 20px; font-size: 12px; color: #666;">
-									<strong>Note:</strong> Each beam sends DISTANCE_SENSOR messages with different orientations:<br/>
-									• Beam 0: YAW_315° (Front-Left)<br/>
-									• Beam 1: YAW_45° (Front-Right)<br/>
-									• Beam 2: YAW_135° (Back-Right)<br/>
+									<strong>Note:</strong> Each beam sends DISTANCE_SENSOR messages with different
+									orientations:<br />
+									• Beam 0: YAW_315° (Front-Left)<br />
+									• Beam 1: YAW_45° (Front-Right)<br />
+									• Beam 2: YAW_135° (Back-Right)<br />
 									• Beam 3: YAW_225° (Back-Left)
 								</div>
 							</div>
 						</v-card>
 					</v-col>
-					<!-- uncoomment this to have control of what kind of message is bein sent and to allow pointing the dvl forward-->
-					<!--
+
+				</v-row>
+				
+				<!-- uncomment this to have control of what kind of message is being sent and to allow pointing the dvl forward-->
+				<!--
+				<v-row>
 					<v-col>
 						<v-card height="200">
 							<h2>Message type:</h2>
@@ -122,10 +185,72 @@
 							</v-radio-group>
 						</v-card>
 					</v-col>
+				</v-row>
+				-->
+				
+				<v-row>
 					<v-col>
-					-->
-					<v-col
-					class="col-12 col-sm-6 col-md-8">
+						<v-card height="400">
+							<h2>Pilot Terrain View</h2>
+							<div style="display: flex; justify-content: space-around; flex-wrap: wrap; gap: 30px; padding: 10px;">
+								
+								<!-- Forward View (Slope X) -->
+								<div style="flex: 1; min-width: 300px; display: flex; flex-direction: column; align-items: center; background: rgba(0,0,0,0.2); border-radius: 12px; padding: 20px; border: 1px solid rgba(255,255,255,0.05);">
+									<h3 style="color: #94a3b8; font-weight: 400; font-size: 16px; margin-bottom: 16px; letter-spacing: 1px;">FORWARD (X-AXIS)</h3>
+									<svg width="100%" height="220" viewBox="0 0 300 220" style="background: linear-gradient(to bottom, #0f172a, #1e2a4f); border-radius: 8px; box-shadow: inset 0 2px 10px rgba(0,0,0,0.5); border: 1px solid #334155; overflow: hidden;">
+										<defs>
+											<linearGradient id="terrainColorX" x1="0" y1="0" x2="0" y2="1">
+												<stop offset="0%" stop-color="#38bdf8" stop-opacity="0.9"/>
+												<stop offset="100%" stop-color="#0284c7" stop-opacity="0.3"/>
+											</linearGradient>
+										</defs>
+										<g transform="translate(150, 50)">
+											<!-- ROV Profile -->
+											<rect x="-25" y="-12" width="50" height="24" rx="4" fill="#fb923c"/>
+											<path d="M 25 -6 L 35 0 L 25 6 Z" fill="#fbd38d"/> <!-- forward arrow -->
+											<!-- Beams -->
+											<line x1="-20" y1="12" x2="-40" y2="100" stroke="#fb923c" stroke-width="1.5" stroke-dasharray="4,4" opacity="0.6"/>
+											<line x1="20" y1="12" x2="40" y2="100" stroke="#fb923c" stroke-width="1.5" stroke-dasharray="4,4" opacity="0.6"/>
+										</g>
+										<!-- Terrain Polygon -->
+										<polygon :points="`0,${150 - 150 * bodySlopeX} 300,${150 + 150 * bodySlopeX} 300,400 0,400`" fill="url(#terrainColorX)" style="transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);"/>
+										<path :d="`M 0,${150 - 150 * bodySlopeX} L 300,${150 + 150 * bodySlopeX}`" stroke="#7dd3fc" stroke-width="3" style="transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);"/>
+										<text x="150" y="205" fill="#e2e8f0" font-size="24" font-weight="700" text-anchor="middle" font-family="'Inter', sans-serif" style="text-shadow: 0 2px 4px rgba(0,0,0,0.8);">{{ forwardSlopeAngle.toFixed(1) }}°</text>
+									</svg>
+								</div>
+								
+								<!-- Right View (Slope Y) -->
+								<div style="flex: 1; min-width: 300px; display: flex; flex-direction: column; align-items: center; background: rgba(0,0,0,0.2); border-radius: 12px; padding: 20px; border: 1px solid rgba(255,255,255,0.05);">
+									<h3 style="color: #94a3b8; font-weight: 400; font-size: 16px; margin-bottom: 16px; letter-spacing: 1px;">PORT / STARBOARD (Y-AXIS)</h3>
+									<svg width="100%" height="220" viewBox="0 0 300 220" style="background: linear-gradient(to bottom, #0f172a, #1e2a4f); border-radius: 8px; box-shadow: inset 0 2px 10px rgba(0,0,0,0.5); border: 1px solid #334155; overflow: hidden;">
+										<defs>
+											<linearGradient id="terrainColorY" x1="0" y1="0" x2="0" y2="1">
+												<stop offset="0%" stop-color="#34d399" stop-opacity="0.9"/>
+												<stop offset="100%" stop-color="#059669" stop-opacity="0.3"/>
+											</linearGradient>
+										</defs>
+										<g transform="translate(150, 50)">
+											<!-- ROV Profile (Rear view) -->
+											<rect x="-20" y="-12" width="40" height="24" rx="4" fill="#fb923c"/>
+											<circle cx="0" cy="0" r="10" fill="#f97316"/> <!-- dome -->
+											<!-- Beams -->
+											<line x1="-15" y1="12" x2="-50" y2="100" stroke="#fb923c" stroke-width="1.5" stroke-dasharray="4,4" opacity="0.6"/>
+											<line x1="15" y1="12" x2="50" y2="100" stroke="#fb923c" stroke-width="1.5" stroke-dasharray="4,4" opacity="0.6"/>
+										</g>
+										<!-- Terrain Polygon -->
+										<polygon :points="`0,${150 - 150 * bodySlopeY} 300,${150 + 150 * bodySlopeY} 300,400 0,400`" fill="url(#terrainColorY)" style="transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);"/>
+										<path :d="`M 0,${150 - 150 * bodySlopeY} L 300,${150 + 150 * bodySlopeY}`" stroke="#6ee7b7" stroke-width="3" style="transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);"/>
+										<text x="150" y="205" fill="#e2e8f0" font-size="24" font-weight="700" text-anchor="middle" font-family="'Inter', sans-serif" style="text-shadow: 0 2px 4px rgba(0,0,0,0.8);">{{ rightSlopeAngle.toFixed(1) }}°</text>
+									</svg>
+								</div>
+								
+							</div>
+						</v-card>
+					</v-col>
+				</v-row>
+				
+				<v-row>
+					<v-col>
 						<v-card height="650">
 							<h2>Set Vehicle Location</h2>
 							<p>Click on the map to set marker position manually</p>
@@ -133,17 +258,21 @@
 							<v-row>
 								<v-col class="col-5">
 									<form>
-										<v-text-field label="Latitude" id="lat" variant="outlined" v-model.number="this.newLat" @change="updateLat"></v-text-field>
-										<v-text-field label="Longitude" id="long" variant="outlined" v-model.number="this.newLong" @change="updateLon"></v-text-field>
+										<v-text-field label="Latitude" id="lat" variant="outlined"
+											v-model.number="this.newLat" @change="updateLat"></v-text-field>
+										<v-text-field label="Longitude" id="long" variant="outlined"
+											v-model.number="this.newLong" @change="updateLon"></v-text-field>
 									</form>
 								</v-col>
 								<v-col class="col-7">
-									<v-btn id="btn-location" type="button" class="btn btn-primary" @click="setCurrentLocation();">Set Vehicle Position</v-btn>
+									<v-btn id="btn-location" type="button" class="btn btn-primary"
+										@click="setCurrentLocation();">Set Vehicle Position</v-btn>
 								</v-col>
 							</v-row>
 						</v-card>
 					</v-col>
 				</v-row>
+				
 				<v-row>
 					<v-col>
 						<v-card height="1000" v-if='hostname'>
@@ -186,9 +315,41 @@
 					"Downwards (LED pointing forward)": 1,
 					"Forward (Experimental)": 2,
 				},
-				beamDistancesEnabled: false,
+				paramsLoaded: false,
 				beamDistances: [0, 0, 0, 0],
-				beamValid: [false, false, false, false]
+				beamValid: [false, false, false, false],
+				ekfEnabled: false,
+				ekfParams: {
+					delay: 0.2,
+					t_var: 100.0,
+					s_var: 1.0,
+					t_noise: 0.01,
+					s_noise: 0.1,
+					gate: 9.0
+				},
+				ekfState: {
+					terrain_z: 0.0,
+					projected_terrain_z: 0.0,
+					slope_n: 0.0,
+					slope_e: 0.0,
+					projected_alt: 0.0,
+					projected_rangefinder: 0.0
+				},
+				yaw: 0.0
+			}
+		},
+		computed: {
+			bodySlopeX() {
+				return this.ekfState.slope_n * Math.cos(this.yaw) + this.ekfState.slope_e * Math.sin(this.yaw);
+			},
+			bodySlopeY() {
+				return -this.ekfState.slope_n * Math.sin(this.yaw) + this.ekfState.slope_e * Math.cos(this.yaw);
+			},
+			forwardSlopeAngle() {
+				return Math.atan(this.bodySlopeX) * 180 / Math.PI;
+			},
+			rightSlopeAngle() {
+				return Math.atan(this.bodySlopeY) * 180 / Math.PI;
 			}
 		},
 		methods: {
@@ -211,9 +372,26 @@
 						if (this.newHostname == null) {
 							this.newHostname = data.hostname
 						}
-						this.beamDistancesEnabled = data.beam_distances_enabled
 						this.beamDistances = data.beam_distances
 						this.beamValid = data.beam_valid
+
+						this.ekfEnabled = data.ekf_enabled
+						this.ekfState.terrain_z = data.ekf_state_terrain_z || 0.0
+						this.ekfState.projected_terrain_z = data.ekf_projected_terrain_z || 0.0
+						this.ekfState.slope_n = data.ekf_state_slope_n || 0.0
+						this.ekfState.slope_e = data.ekf_state_slope_e || 0.0
+						this.ekfState.projected_alt = data.ekf_projected_alt || 0.0
+						this.ekfState.projected_rangefinder = data.ekf_projected_rangefinder || 0.0
+
+						if (!this.paramsLoaded) {
+							this.ekfParams.delay = data.ekf_sensor_delay || 0.2
+							this.ekfParams.t_var = data.ekf_terrain_variance || 100.0
+							this.ekfParams.s_var = data.ekf_slope_variance || 1.0
+							this.ekfParams.t_noise = data.ekf_terrain_process_noise || 0.01
+							this.ekfParams.s_noise = data.ekf_slope_process_noise || 0.1
+							this.ekfParams.gate = data.ekf_gate_threshold || 9.0
+							this.paramsLoaded = true
+						}
 					})
 					.catch((error) => {
 						this.status = `Unable to talk to DVL service: ${error}`
@@ -223,8 +401,8 @@
 			updateVehiclePosition() {
 				axios.get(`http://${window.location.hostname}/mavlink2rest/mavlink/vehicles/1/components/1/messages/GLOBAL_POSITION_INT/message`, { timeout: 1000 })
 					.then((response) => {
-						lat = response.data.lat/1e7
-						lon = response.data.lon/1e7
+						lat = response.data.lat / 1e7
+						lon = response.data.lon / 1e7
 						if (this.rovMarker === undefined) {
 							var myIcon = L.icon(
 								{
@@ -232,25 +410,27 @@
 									iconSize: [30, 30],
 									iconAnchor: [15, 15],
 									className: 'rovmarker',
-							});
-							this.rovMarker = L.marker([lat, lon], { title: "ROV position", icon: myIcon, rotationAngle: 45})
-							.addTo(map)
+								});
+							this.rovMarker = L.marker([lat, lon], { title: "ROV position", icon: myIcon, rotationAngle: 45 })
+								.addTo(map)
 						} else {
 							this.rovPosition = [lat, lon]
 							this.rovMarker.setLatLng(new L.LatLng(lat, lon))
 						}
 					})
-					axios.get(`http://${window.location.hostname}/mavlink2rest/mavlink/vehicles/1/components/1/messages/ATTITUDE/message/yaw`, { timeout: 1000 })
+				axios.get(`http://${window.location.hostname}/mavlink2rest/mavlink/vehicles/1/components/1/messages/ATTITUDE/message/yaw`, { timeout: 1000 })
 					.then((response) => {
-						angle = parseFloat(response.data) * 57.2958
+						let angle_rad = parseFloat(response.data)
+						this.yaw = angle_rad
+						let angle = angle_rad * 57.2958
 						this.rovMarker.setRotationAngle(angle)
 					})
 			},
 			createMap() {
 				map = L.map('mapid').setView([0, 0], 1);
-				L.tileLayer('http://{s}.google.com/vt/lyrs=s,h&x={x}&y={y}&z={z}',{
+				L.tileLayer('http://{s}.google.com/vt/lyrs=s,h&x={x}&y={y}&z={z}', {
 					maxZoom: 22,
-					subdomains:['mt0','mt1','mt2','mt3'],
+					subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
 					maxNativeZoom: 20
 				}).addTo(map);
 
@@ -343,10 +523,18 @@
 				request.send();
 			},
 
-			setBeamDistancesEnabled(value) {
+			setEKFEnabled(value) {
 				const request = new XMLHttpRequest();
 				request.timeout = 800;
-				request.open('GET', 'beam_distances/' + value, true);
+				request.open('GET', 'set_ekf_enabled/' + value, true);
+				request.send();
+			},
+
+			updateEKFParams() {
+				const request = new XMLHttpRequest();
+				request.timeout = 800;
+				let url = `set_ekf_params/${this.ekfParams.delay}/${this.ekfParams.t_var}/${this.ekfParams.s_var}/${this.ekfParams.t_noise}/${this.ekfParams.s_noise}/${this.ekfParams.gate}`
+				request.open('GET', url, true);
 				request.send();
 			}
 

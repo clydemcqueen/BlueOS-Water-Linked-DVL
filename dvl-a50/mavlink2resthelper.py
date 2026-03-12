@@ -361,25 +361,6 @@ class Mavlink2RestHelper:
         )
         post(MAVLINK2REST_URL + "/mavlink", data=data)
 
-    def send_beam_distances(self, beam_distances: list, beam_valid: list):
-        """
-        Send individual beam distances from DVL transducers as separate DISTANCE_SENSOR messages
-        Each beam gets a different orientation to work around ArduSub's single rangefinder per orientation limitation
-        """
-        # Define orientations for each beam (1=rear-right, 2=rear-left, 3=front-left, 4=front-right)
-        # These orientations represent the 4 quadrants around the DVL
-        beam_orientations = [
-            "MAV_SENSOR_ROTATION_YAW_135",  # rear-right
-            "MAV_SENSOR_ROTATION_YAW_225",  # rear-left
-            "MAV_SENSOR_ROTATION_YAW_315",  # front-left
-            "MAV_SENSOR_ROTATION_YAW_45",  # front-right
-        ]
-
-        for i, (distance, valid) in enumerate(zip(beam_distances, beam_valid)):
-            if valid and distance > 0.05:  # Only send valid readings above 5cm
-                # Use sensor_id 1-4 for individual beams (0 is reserved for average)
-                self.send_rangefinder(distance, sensor_id=i + 1, orientation=beam_orientations[i])
-
     def set_gps_origin(self, lat, lon):
         data = self.gps_origin_template.format(lat=int(float(lat) * 1e7), lon=int(float(lon) * 1e7))
         post(MAVLINK2REST_URL + "/mavlink", data=data)
