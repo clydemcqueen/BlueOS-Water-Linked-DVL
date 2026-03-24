@@ -7,7 +7,7 @@ RUN mkdir -p /home/pi
 
 # Install dvl service
 COPY dvl-a50 /home/pi/dvl-a50
-RUN cd /home/pi/dvl-a50 && pip3 install .
+RUN cd /home/pi/dvl-a50 && pip3 install --extra-index-url https://www.piwheels.org/simple --prefer-binary .
 
 LABEL version="1.0.7"
 LABEL permissions='\
