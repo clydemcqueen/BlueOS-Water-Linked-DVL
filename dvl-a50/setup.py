@@ -24,6 +24,6 @@ setup(
         "click == 7.1.2",
         "Werkzeug==1.0.1",
         "requests",
-        "numpy == 2.0.2",
+        "numpy",
     ],
 )
