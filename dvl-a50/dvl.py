@@ -3,9 +3,11 @@ Code for integration of Water Linked DVL A50/A125 with BlueOS and ArduSub
 """
 
 import csv
+import datetime
 import json
 import math
 import os
+import pathlib
 import socket
 import threading
 import time
@@ -50,6 +52,89 @@ class MessageType(str, Enum):
     @staticmethod
     def contains(value):
         return value in set(item.value for item in MessageType)
+
+
+class EKFLogger:
+    """
+    Write detailed logs to a CSV file for analysis.
+    """
+
+    @staticmethod
+    def get_log_path() -> str:
+        """
+        Generate a log path in the standard BlueOS format: /data/logs/YYYY-MM-DD/YYYY-MM-DD_HH-MM-SS_ekf.csv
+        """
+        now = datetime.datetime.now()
+        date_str = now.strftime("%Y-%m-%d")
+        time_str = now.strftime("%H-%M-%S")
+        local_test = os.environ.get("DVL_TEST_MODE", "false").lower() == "true"
+        dir_str = os.path.join("/tmp", "dvl_test", date_str) if local_test else os.path.join("/data", "logs", date_str)
+        pathlib.Path(dir_str).mkdir(parents=True, exist_ok=True)
+        return os.path.join(dir_str, f"{date_str}_{time_str}_ekf.csv")
+
+    def __init__(self) -> None:
+        self.ekf_log_file = None
+        self.ekf_csv_writer = None
+        try:
+            log_path = self.get_log_path()
+            # pylint: disable=consider-using-with
+            self.ekf_log_file = open(log_path, mode="a", newline="", encoding="utf-8")
+            self.ekf_csv_writer = csv.writer(self.ekf_log_file)
+            self.ekf_csv_writer.writerow(
+                [
+                    "timestamp",
+                    "beam_ar_range",  # aft-right
+                    "beam_al_range",  # aft-left
+                    "beam_fl_range",  # forward-left
+                    "beam_fr_range",  # forward-right
+                    "vn",
+                    "ve",
+                    "vd",
+                    "rov_d",
+                    "roll",
+                    "pitch",
+                    "yaw",
+                    "ekf_terrain_d",
+                    "ekf_slope_n",
+                    "ekf_slope_e",
+                    "proj_terrain_d",
+                    "proj_alt",
+                    "proj_rangefinder",
+                    "beam_ar_status",
+                    "beam_al_status",
+                    "beam_fl_status",
+                    "beam_fr_status",
+                ]
+            )
+            logger.info(f"Started EKF logging to {log_path}")
+        except Exception as e:
+            logger.warning(f"Could not open EKF log file {log_path}: {e}")
+
+    def log(self, data: List[Any]) -> None:
+        """
+        Write a row of data to the EKF log file.
+        """
+        if self.ekf_csv_writer and self.ekf_log_file:
+            try:
+                self.ekf_csv_writer.writerow(data)
+                self.ekf_log_file.flush()
+            except Exception as e:
+                logger.warning(f"Could not write to EKF log: {e}")
+
+    def stop(self) -> None:
+        """
+        Close the EKF csv file if it's open.
+        """
+        if self.ekf_log_file:
+            try:
+                self.ekf_log_file.close()
+            except Exception as e:
+                logger.warning(f"Error closing EKF log file: {e}")
+            self.ekf_log_file = None
+            self.ekf_csv_writer = None
+
+    def __del__(self) -> None:
+        self.stop()
 
 
 # pylint: disable=too-many-instance-attributes
@@ -99,13 +184,12 @@ class DvlDriver(threading.Thread):
     ekf_gate_threshold = 9.0
 
     ekf = None
-    ekf_log_file = None
-    ekf_csv_writer = None
+    ekf_logger = None
 
-    ekf_state_terrain_z = 0.0
+    ekf_state_terrain_d = 0.0
     ekf_state_slope_n = 0.0
     ekf_state_slope_e = 0.0
-    ekf_projected_terrain_z = 0.0
+    ekf_projected_terrain_d = 0.0
     ekf_projected_alt = 0.0
     ekf_projected_rangefinder = 0.0
 
@@ -135,45 +219,13 @@ class DvlDriver(threading.Thread):
         logger.debug(msg)
 
     def reset_ekf(self):
-        if not self.ekf_enabled:
+        if self.ekf is None:
             return
 
         logger.info("Resetting TerrainEKF...")
 
         self.ekf = None
-
-        try:
-            log_path = os.path.join(os.path.expanduser("~"), ".config", "dvl", "ekf_log.csv")
-            if self.ekf_log_file:
-                self.ekf_log_file.close()
-
-            file_exists = os.path.isfile(log_path)
-            # pylint: disable=consider-using-with
-            self.ekf_log_file = open(log_path, mode="a", newline="")
-            self.ekf_csv_writer = csv.writer(self.ekf_log_file)
-
-            if not file_exists:
-                self.ekf_csv_writer.writerow(
-                    [
-                        "timestamp",
-                        "vn",
-                        "ve",
-                        "vd",
-                        "rov_depth",
-                        "roll",
-                        "pitch",
-                        "yaw",
-                        "beam_distances",
-                        "ekf_terrain_z",
-                        "ekf_slope_n",
-                        "ekf_slope_e",
-                        "projected_terrain_z",
-                        "projected_alt",
-                        "projected_rangefinder",
-                    ]
-                )
-        except Exception as e:
-            logger.warning(f"Could not open EKF log file: {e}")
+        self.ekf_logger = None
 
     def load_settings(self) -> None:
         """
@@ -197,7 +249,6 @@ class DvlDriver(threading.Thread):
         env_hostname = os.environ.get("DVL_HOSTNAME")
         if env_hostname:
             self.hostname = env_hostname
-        self.ekf_enabled = True
         self.reset_ekf()
 
     @property
@@ -231,8 +282,8 @@ class DvlDriver(threading.Thread):
             "ekf_enabled": self.send_ekf_output,
             "beam_distances": self.last_beam_distances,
             "beam_valid": self.last_beam_valid,
-            "ekf_state_terrain_z": self.ekf_state_terrain_z,
-            "ekf_projected_terrain_z": self.ekf_projected_terrain_z,
+            "ekf_state_terrain_d": self.ekf_state_terrain_d,
+            "ekf_projected_terrain_d": self.ekf_projected_terrain_d,
             "ekf_state_slope_n": self.ekf_state_slope_n,
             "ekf_state_slope_e": self.ekf_state_slope_e,
             "ekf_projected_alt": self.ekf_projected_alt,
@@ -553,33 +604,33 @@ class DvlDriver(threading.Thread):
         # since the test environment might not emit them.
         is_test_mode = os.environ.get("DVL_TEST_MODE", "false").lower() == "true"
 
-        rov_depth = 0.0
+        rov_d = 0.0
         r_roll, r_pitch, r_yaw = 0.0, 0.0, 0.0
 
         try:
             if is_test_mode:
                 vfr_hud = self.mav.get("/VFR_HUD/message")
                 if vfr_hud:
-                    rov_depth = -float(json.loads(vfr_hud)["alt"])
+                    rov_d = -float(json.loads(vfr_hud)["alt"])
                 else:
-                    rov_depth = 1.0  # 1m depth assumption for test mode
+                    rov_d = 1.0  # 1m depth assumption for test mode
 
                 attitude = self.mav.get("/ATTITUDE/message")
                 if attitude:
                     attitude_data = json.loads(attitude)
                     r_roll, r_pitch, r_yaw = attitude_data["roll"], attitude_data["pitch"], attitude_data["yaw"]
             else:
-                rov_depth = -float(self.mav.get("/VFR_HUD/message/alt"))
+                rov_d = -float(self.mav.get("/VFR_HUD/message/alt"))
                 attitude_data = json.loads(self.mav.get("/ATTITUDE/message"))
                 r_roll, r_pitch, r_yaw = attitude_data["roll"], attitude_data["pitch"], attitude_data["yaw"]
         except Exception:
             pass  # Accept 0s if we fail to fetch MAVLink on this cycle
 
-        if self.ekf_enabled and self.ekf is None and alt > 0:
-            logger.info(f"Initializing TerrainEKF with alt={alt}, rov_depth={rov_depth}")
+        if self.ekf is None and alt > 0:
+            logger.info(f"Initializing TerrainEKF with alt={alt}, rov_d={rov_d}")
             self.ekf = TerrainEKF(
                 dvl_model=DVLModelA50(),
-                initial_terrain_z=alt + rov_depth,
+                initial_terrain_d=alt + rov_d,
                 params=EKFParams(
                     delay=self.ekf_sensor_delay,
                     t_var=self.ekf_terrain_variance,
@@ -589,8 +640,9 @@ class DvlDriver(threading.Thread):
                     gate=self.ekf_gate_threshold,
                 ),
             )
+            self.ekf_logger = EKFLogger()
 
-        if self.ekf_enabled and self.ekf is not None:
+        if self.ekf is not None:
             # We want vn, ve in earth frame for predict step
             R_body_to_earth = self._get_r_body_to_earth(r_roll, r_pitch, r_yaw)
             v_body = np.array([vx, vy, vz])
@@ -605,52 +657,56 @@ class DvlDriver(threading.Thread):
                 # Replace invalid beams with 0 for EKF (TerrainEKF handles 0 as reject)
                 ekf_beams = [d if v else 0.0 for d, v in zip(beam_distances, beam_valid)]
                 # Convert list to array or pass directly depending on if TerrainEKF expects array.
-                self.ekf.update(ekf_beams, rov_depth, R_body_to_earth, beam_variance=0.01)
+                self.ekf.update(ekf_beams, rov_d, R_body_to_earth, beam_variance=0.01)
 
             # Project forward from t_capture to t_now
             state_proj, _ = self.ekf.project((vn, ve), self.ekf_sensor_delay)
-            self.ekf_state_terrain_z = self.ekf.x[0, 0]
+            self.ekf_state_terrain_d = self.ekf.x[0, 0]
             self.ekf_state_slope_n = self.ekf.x[1, 0]
             self.ekf_state_slope_e = self.ekf.x[2, 0]
 
             # Altitude of terrain at t_now (positive down)
-            projected_terrain_z = state_proj[0]
-            self.ekf_projected_terrain_z = projected_terrain_z
+            self.ekf_projected_terrain_d = state_proj[0]
 
             # Vertical range from ROV to terrain
-            self.ekf_projected_alt = projected_terrain_z - rov_depth
+            self.ekf_projected_alt = state_proj[0] - rov_d
 
             # Calculate the rangefinder distance along the downward body Z axis
-            v_earth_z = R_body_to_earth @ np.array([0, 0, 1])
-            n_earth = np.array([self.ekf_state_slope_n, self.ekf_state_slope_e, 1.0])
-            dot_prod = np.dot(v_earth_z, n_earth)
+            v_earth_d = R_body_to_earth[:, 2]
+            normal_earth = np.array([self.ekf_state_slope_n, self.ekf_state_slope_e, 1.0])
+            dot_prod = np.dot(v_earth_d, normal_earth)
             if dot_prod > 0.01:
-                self.ekf_projected_rangefinder = self.ekf_projected_alt / dot_prod
+                self.ekf_projected_rangefinder = max(0.0, self.ekf_projected_alt / dot_prod)
             else:
                 self.ekf_projected_rangefinder = 0.0
 
             # Log Data
-            if self.ekf_csv_writer and self.ekf_log_file:
-                self.ekf_csv_writer.writerow(
-                    [
-                        time.time(),
-                        vn,
-                        ve,
-                        vd,
-                        rov_depth,
-                        r_roll,
-                        r_pitch,
-                        r_yaw,
-                        str(beam_distances),
-                        self.ekf_state_terrain_z,
-                        self.ekf_state_slope_n,
-                        self.ekf_state_slope_e,
-                        self.ekf_projected_terrain_z,
-                        self.ekf_projected_alt,
-                        self.ekf_projected_rangefinder,
-                    ]
-                )
-                self.ekf_log_file.flush()
+            self.ekf_logger.log(
+                [
+                    time.time(),
+                    beam_distances[0],  # aft-right
+                    beam_distances[1],  # aft-left
+                    beam_distances[2],  # forward-left
+                    beam_distances[3],  # forward-right
+                    vn,
+                    ve,
+                    vd,
+                    rov_d,
+                    r_roll,
+                    r_pitch,
+                    r_yaw,
+                    self.ekf_state_terrain_d,
+                    self.ekf_state_slope_n,
+                    self.ekf_state_slope_e,
+                    self.ekf_projected_terrain_d,
+                    self.ekf_projected_alt,
+                    self.ekf_projected_rangefinder,
+                    self.ekf.beam_status[0],
+                    self.ekf.beam_status[1],
+                    self.ekf.beam_status[2],
+                    self.ekf.beam_status[3],
+                ]
+            )
 
             # Send main rangefinder message
             if self.rangefinder:

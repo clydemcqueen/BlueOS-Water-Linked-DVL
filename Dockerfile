@@ -16,7 +16,7 @@ LABEL permissions='\
    "9001/tcp": {}\
   },\
   "HostConfig": {\
-    "Binds":["/root/.config:/root/.config"],\
+    "Binds":["/root/.config:/root/.config", "/usr/blueos/extensions/waterlinked-dvl:/data"],\
     "ExtraHosts": [\
       "host.docker.internal:host-gateway"\
     ],\

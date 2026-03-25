@@ -2,6 +2,13 @@ from typing import NamedTuple
 
 import numpy as np
 
+BEAM_ACCEPT = 0
+BEAM_REJECT_MIN_ALT = 1
+BEAM_REJECT_RANGE = 2
+BEAM_REJECT_TILT = 3
+BEAM_REJECT_NIS = 4
+EKF_SINGULAR_MATRIX = 5
+
 
 class EKFParams(NamedTuple):
     delay: float
@@ -26,11 +33,12 @@ def project(x, P, Q_per_sec, velocity, sensor_delay):
     return x_proj.flatten(), P_proj
 
 
+# pylint: disable=too-many-statements
 class TerrainEKF:
     """
     Tightly coupled Terrain EKF.
 
-        x[0] terrain_z (m): depth of the seafloor (positive down)
+        x[0] terrain_d (m): depth of the seafloor (positive down)
         x[1] slope_n (unitless): terrain rises to the north
         x[2] slope_e (unitless): terrain rises to the east
     """
@@ -38,13 +46,13 @@ class TerrainEKF:
     def __init__(
         self,
         dvl_model,
-        initial_terrain_z,
+        initial_terrain_d,
         params: EKFParams,
         initial_slope=(0.0, 0.0),
     ):
 
         initial_slope_n, initial_slope_e = initial_slope
-        self.x = np.array([[initial_terrain_z], [initial_slope_n], [initial_slope_e]], dtype=float)
+        self.x = np.array([[initial_terrain_d], [initial_slope_n], [initial_slope_e]], dtype=float)
 
         self.P = np.diag([params.t_var, params.s_var, params.s_var]).astype(float)
 
@@ -54,6 +62,7 @@ class TerrainEKF:
 
         # Beam vectors in body frame
         self.beam_vectors_body = dvl_model.get_beam_vectors_body()
+        self.beam_status = [BEAM_ACCEPT] * 4
 
     def predict(self, vn, ve, dt) -> np.ndarray:
         F = np.array([[1.0, -vn * dt, -ve * dt], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
@@ -66,15 +75,18 @@ class TerrainEKF:
         # Return F for use by the RTS smoother
         return F
 
-    def update(self, beams, rov_depth, R_body_to_earth, beam_variance):
-        est_terrain_z = self.x[0, 0]
+    def update(self, beams, rov_d, R_body_to_earth, beam_variance):
+        est_terrain_d = self.x[0, 0]
         est_slope_n = self.x[1, 0]
         est_slope_e = self.x[2, 0]
-        est_alt = est_terrain_z - rov_depth
+        est_alt = est_terrain_d - rov_d
+
+        self.beam_status = [BEAM_ACCEPT] * 4
 
         # TODO relax this while the EKF is warming up
         if est_alt < 0.1:
-            print(f"est_alt {est_alt} = est_terrain_z {est_terrain_z} - rov_depth {rov_depth}, skipping update")
+            print(f"est_alt {est_alt} = est_terrain_d {est_terrain_d} - rov_d {rov_d}, skipping update")
+            self.beam_status = [BEAM_REJECT_MIN_ALT] * 4
             return
 
         z_meas_residual_list = []
@@ -88,6 +100,7 @@ class TerrainEKF:
             measured_range = beams[i]
 
             if measured_range <= 0:
+                self.beam_status[i] = BEAM_REJECT_RANGE
                 continue
 
             v_body = self.beam_vectors_body[i]
@@ -95,6 +108,7 @@ class TerrainEKF:
             dot_prod = np.dot(v_earth, n_earth)
 
             if dot_prod <= 0.01:
+                self.beam_status[i] = BEAM_REJECT_TILT
                 continue
 
             expected_range = est_alt / dot_prod
@@ -111,6 +125,8 @@ class TerrainEKF:
             nis = (residual**2) / S_scalar
 
             if nis > self.gate_threshold:
+                self.beam_status[i] = BEAM_REJECT_NIS
+                # print(f"Beam {i} rejected due to NIS {nis} > {self.gate_threshold}")
                 continue
 
             z_meas_residual_list.append(residual)
@@ -131,7 +147,9 @@ class TerrainEKF:
                 I_mat = np.eye(3)
                 self.P = (I_mat - (K @ H)) @ self.P
             except np.linalg.LinAlgError:
-                pass
+                for i in range(4):
+                    if self.beam_status[i] == BEAM_ACCEPT:
+                        self.beam_status[i] = EKF_SINGULAR_MATRIX
 
     def get_state(self):
         """Returns flattened state array [terrain, slope_n, slope_e]"""
