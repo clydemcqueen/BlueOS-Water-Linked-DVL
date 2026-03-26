@@ -166,6 +166,7 @@ class DvlDriver(threading.Thread):
         "rangefinder",
         "should_send",
         "send_ekf_output",
+        "ekf_enabled",
         "ekf_sensor_delay",
         "ekf_terrain_variance",
         "ekf_slope_variance",
@@ -279,6 +280,7 @@ class DvlDriver(threading.Thread):
         return {
             "status": self.status,
             **self.current_settings,
+            "terrain_ekf_enabled": self.ekf_enabled,
             "ekf_enabled": self.send_ekf_output,
             "beam_distances": self.last_beam_distances,
             "beam_valid": self.last_beam_valid,
@@ -455,6 +457,14 @@ class DvlDriver(threading.Thread):
             self.mav.set_param("RNGFND1_TYPE", "MAV_PARAM_TYPE_UINT8", 10)  # MAVLINK
         return True
 
+    def set_terrain_ekf_enabled(self, enable: bool) -> bool:
+        self.ekf_enabled = enable
+        if not enable:
+            self.send_ekf_output = False
+            self.reset_ekf()
+        self.save_settings()
+        return True
+
     def set_ekf_enabled(self, enable: bool) -> bool:
         self.send_ekf_output = enable
         self.save_settings()
@@ -626,7 +636,7 @@ class DvlDriver(threading.Thread):
         except Exception:
             pass  # Accept 0s if we fail to fetch MAVLink on this cycle
 
-        if self.ekf is None and alt > 0:
+        if self.ekf_enabled and self.ekf is None and alt > 0:
             logger.info(f"Initializing TerrainEKF with alt={alt}, rov_d={rov_d}")
             self.ekf = TerrainEKF(
                 dvl_model=DVLModelA50(),

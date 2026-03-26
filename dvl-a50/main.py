@@ -65,9 +65,17 @@ class API:
             return self.dvl.set_use_as_rangefinder(enabled == "true")
         return False
 
+    def set_terrain_ekf_enabled(self, enabled: str) -> bool:
+        """
+        Enables/disables the Terrain EKF computation
+        """
+        if enabled in ["true", "false"]:
+            return self.dvl.set_terrain_ekf_enabled(enabled == "true")
+        return False
+
     def set_ekf_enabled(self, enabled: str) -> bool:
         """
-        Enables/disables the EKF
+        Enables/disables the EKF output sending
         """
         if enabled in ["true", "false"]:
             return self.dvl.set_ekf_enabled(enabled == "true")
@@ -132,6 +140,10 @@ if __name__ == "__main__":
     @app.route("/use_as_rangefinder/<enable>")
     def set_use_rangefinder(enable: str):
         return str(api.set_use_as_rangefinder(enable))
+
+    @app.route("/set_terrain_ekf_enabled/<enable>")
+    def set_terrain_ekf_enabled_route(enable: str):
+        return str(api.set_terrain_ekf_enabled(enable))
 
     @app.route("/set_ekf_enabled/<enable>")
     def set_ekf_enabled_route(enable: str):

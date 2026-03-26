@@ -46,7 +46,10 @@
 								@change="setDvlEnabled($event)"></v-switch>
 							<v-switch v-model="this.rangefinder" inset :label="`Send range data through MAVLink`"
 								@change="setDvlAsRangefinder($event)"></v-switch>
+							<v-switch v-model="this.terrainEkfEnabled" inset :label="`Enable Terrain EKF`"
+								@change="setTerrainEKFEnabled($event)"></v-switch>
 							<v-switch v-model="this.ekfEnabled" inset :label="`Send EKF output`"
+								:disabled="!terrainEkfEnabled"
 								@change="setEKFEnabled($event)"></v-switch>
 							<v-btn id="btn-load-dvl" type="button" class="btn btn-primary"
 								@click="loadParams('dvl');">Load parameters for DVL</v-btn>
@@ -318,6 +321,7 @@
 				paramsLoaded: false,
 				beamDistances: [0, 0, 0, 0],
 				beamValid: [false, false, false, false],
+				terrainEkfEnabled: true,
 				ekfEnabled: false,
 				ekfParams: {
 					delay: 0.2,
@@ -375,6 +379,7 @@
 						this.beamDistances = data.beam_distances
 						this.beamValid = data.beam_valid
 
+						this.terrainEkfEnabled = data.terrain_ekf_enabled
 						this.ekfEnabled = data.ekf_enabled
 						this.ekfState.terrain_z = data.ekf_state_terrain_z || 0.0
 						this.ekfState.projected_terrain_z = data.ekf_projected_terrain_z || 0.0
@@ -521,6 +526,16 @@
 				request.timeout = 800;
 				request.open('GET', 'setcurrentposition/' + this.newLat + '/' + this.newLong, true);
 				request.send();
+			},
+
+			setTerrainEKFEnabled(value) {
+				const request = new XMLHttpRequest();
+				request.timeout = 800;
+				request.open('GET', 'set_terrain_ekf_enabled/' + value, true);
+				request.send();
+				if (!value) {
+					this.ekfEnabled = false;
+				}
 			},
 
 			setEKFEnabled(value) {
