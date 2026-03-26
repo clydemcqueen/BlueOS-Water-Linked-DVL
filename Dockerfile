@@ -7,6 +7,12 @@ RUN mkdir -p /home/pi
 
 # Install dvl service
 COPY dvl-a50 /home/pi/dvl-a50
+
+# Prevent OpenBLAS/OpenMP from spawning threads for small matrix operations,
+# which drastically reduces EKF CPU overhead on the Pi's ARM cores.
+ENV OPENBLAS_NUM_THREADS=1
+ENV OMP_NUM_THREADS=1
+
 RUN cd /home/pi/dvl-a50 && pip3 install --extra-index-url https://www.piwheels.org/simple --prefer-binary .
 
 LABEL version="1.0.7"
